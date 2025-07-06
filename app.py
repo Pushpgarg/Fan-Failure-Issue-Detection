@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
-import os
+
 
 # ========== Configs ==========
 failure_cols = [
@@ -18,12 +18,15 @@ for failure in failure_cols:
     scalers[failure] = joblib.load(f"scalers/scaler_{label}.pkl")
     models[failure] = joblib.load(f"trained_models/model_{label}.pkl")
 
+# Load encoder
+encoder = joblib.load("encoder.pkl")
+
 # ========== Input UI ==========
 st.title("🛠️ Equipment Failure Predictor")
 st.markdown("Enter the values below to predict possible failures.")
 
-# Categorical options
-equipment_types = ['Axial', 'Exhaust']
+# Categorical options (3 values for Equipment Type and 3 for Location)
+equipment_types = ['Axial', 'Exhaust', 'Centrifugal']
 locations = ['Plant A', 'Plant B', 'Plant C']
 
 data_input = {}
@@ -44,8 +47,13 @@ data_input['Humidity (%)'] = st.number_input("Humidity (%)", value=5.0)
 data_input['RPM'] = st.number_input("RPM", value=70.0)
 data_input['Sound (dB)'] = st.number_input("Sound (dB)", value=65.0)
 data_input['Current (A)'] = st.number_input("Current (A)", value=5.0)
-
-# ========== Prediction ========== 
+# Add derived feature manually
+data_input['vibration_total'] = np.sqrt(
+    data_input['Vibration_X']**2 + 
+    data_input['Vibration_Y']**2 + 
+    data_input['Vibration_Z']**2
+)
+# ========== Prediction ==========
 if st.button("🔍 Predict Failures"):
     input_df = pd.DataFrame([data_input])
 
@@ -54,26 +62,29 @@ if st.button("🔍 Predict Failures"):
     for failure in failure_cols:
         label = failure.replace(" ", "_")
 
-        # Load X_test sample to get correct column structure (assumes same preprocessing order)
+        # ➕ Step 1: Apply encoder (same as training)
+        input_encoded = encoder.transform(input_df)
+
+        # ➕ Step 2: Remove 'cat__' and 'remainder__' from feature names
+        raw_cols = encoder.get_feature_names_out()
+        clean_cols = [col.replace("cat__", "").replace("remainder__", "") for col in raw_cols]
+        input_encoded_df = pd.DataFrame(input_encoded, columns=clean_cols)
+
+        # ✅ Step 3: Fix column order to match training data
         sample_X = pd.read_csv(f"split_data/{label}/X_train.csv")
-        cat_cols = ['Equipment Type', 'Location']
-        num_cols = [col for col in sample_X.columns if col not in cat_cols]
+        input_encoded_df = input_encoded_df[sample_X.columns]
 
-        # One-hot encode manually
-        input_encoded = pd.get_dummies(input_df)
-        sample_columns = sample_X.columns
-        input_encoded = input_encoded.reindex(columns=sample_columns, fill_value=0)
-
-        # Scale using corresponding scaler
+        # ✅ Step 4: Apply scaler
         scaler = scalers[failure]
-        input_scaled = scaler.transform(input_encoded)
+        input_scaled = scaler.transform(input_encoded_df)
 
-        # Predict using model
+        # ✅ Step 5: Predict
         model = models[failure]
         prediction = model.predict(input_scaled)[0]
 
         results[failure] = "❌ Failure" if prediction == 1 else "✅ Normal"
 
+    # Show results
     st.subheader("📊 Prediction Results")
     for k, v in results.items():
         st.write(f"**{k}:** {v}")
